@@ -217,6 +217,8 @@ The package declares `sqlalchemy[asyncio]` so standalone installs such as `uv to
 
 Published package metadata also enforces the security floors `click>=8.3.3` and `pyasn1>=0.6.4`. These apply to standalone wheel/sdist installs as well as repository environments; no separate uv constraint configuration is needed.
 
+Unhandled execution errors and shutdown interruptions persist `FAILED` when storage is available, preserving existing terminal states. Shutdown drains buffered output before closing clients and stores. SSE disconnects allow execution to continue; use `CancelTask` to request an upstream abort before stopping the application.
+
 ### SQLite Persistence Hardening
 
 File-backed SQLite databases are hardened at startup and on every new connection on POSIX systems:
@@ -241,7 +243,7 @@ Database-backed task persistence also keeps the existing first-terminal-state-wi
 
 At startup, the runtime logs a concise persistence summary covering the active backend, the redacted database URL when applicable, the shared persistence scope, and whether the SQLite local durability profile is active.
 
-The adapter-owned state tables listed above remain managed by the internal migration runner. The SDK-owned `tasks` table does not use runtime auto-migration here; upgrade existing SDK task schemas explicitly with upstream `a2a-db` before starting the service after an SDK schema change. If `a2a-db` is unavailable in your environment, install the `a2a-sdk[db-cli]` extra first.
+SDK task schemas require an explicit [upgrade](#upgrading-an-existing-database) when incompatible; startup then converts legacy task payloads transactionally. Existing v1 rows and task ownership are preserved.
 
 In-flight asyncio locks, outbound A2A client caches, and stream-local aggregation buffers remain process-local runtime state.
 
@@ -250,6 +252,21 @@ To opt into an ephemeral development profile, set:
 ```bash
 A2A_TASK_STORE_BACKEND=memory
 ```
+
+### Upgrading an Existing Database
+
+If startup reports an incompatible task schema, stop the application and back up SQLite, then use the installed release's migration tool:
+
+```bash
+OPENCODE_A2A_VERSION="$(opencode-a2a --version | awk '{print $2}')"
+uvx --from "opencode-a2a[migrations]==${OPENCODE_A2A_VERSION}" a2a-db upgrade head \
+  --database-url 'sqlite+aiosqlite:////absolute/path/opencode-a2a.db' \
+  --add_columns_owner_last_updated-default-owner automation
+```
+
+For source checkouts, use `uv run --extra migrations a2a-db` with the same arguments. Replace `automation` with the intended bearer principal or Basic username: adding an owner column assigns all old tasks to that identity; existing owners are unchanged. Multiple historical owners require an explicit mapping before migration.
+
+Restart and verify an old task under its owner. Startup converts legacy payloads and fills missing query timestamps; malformed payloads roll back conversion and prevent startup. Restore the backup to roll back the upgrade. Fresh installations and compatible schemas need no migration command.
 
 ## Troubleshooting Provider Auth State
 
