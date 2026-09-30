@@ -168,3 +168,36 @@ Extension URI: `urn:opencode-a2a:extension:wire-contract:v1`
 - Dependencies: none declared by this version
 - Security boundary: this is deployment-specific discovery metadata, not an invitation to assume portability of `opencode.*` surfaces
 - Versioning: breaking changes require a new versioned URI
+
+
+## Structured Output Contract (`metadata.shared.format`)
+
+### Overview
+Allows clients calling `SendMessage` to request a JSON Schema-validated model response directly in a single request.
+
+### Request Payload (`metadata.shared.format`)
+```json
+{
+  "metadata": {
+    "shared": {
+      "format": {
+        "type": "json_schema",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "summary": { "type": "string" },
+            "diff": { "type": "string" }
+          },
+          "required": ["summary", "diff"],
+          "additionalProperties": false
+        }
+      }
+    }
+  }
+}
+```
+
+### Notes & Limitations
+- **Format Type**: Only `"type": "json_schema"` with an `"object"` schema is supported.
+- **ASCII Preference**: Schema descriptions and annotations should avoid non-ASCII characters to guarantee compatibility across gRPC/ProtoStruct transformations.
+- **Artifact Output**: The validated output is returned as an A2A Artifact with `name: "structured_output"` containing a data part with the JSON object.
