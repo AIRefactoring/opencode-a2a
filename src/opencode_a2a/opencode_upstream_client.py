@@ -827,6 +827,7 @@ class OpencodeUpstreamClient:
         workspace_id: str | None = None,
         model_override: Mapping[str, Any] | None = None,
         timeout_override: float | None | object = _UNSET,
+        format_override: Mapping[str, Any] | None = None,
     ) -> OpencodeMessage:
         payload_parts: list[dict[str, Any]]
         if parts is not None:
@@ -854,6 +855,18 @@ class OpencodeUpstreamClient:
         normalized_model = self._normalize_model_ref(model_override)
         if normalized_model is not None:
             payload["model"] = normalized_model
+        # H-01: the upstream /session/{id}/message endpoint accepts
+        # format={"type":"json_schema","schema":{...}} and validates the
+        # model output server-side; the structured result then appears as
+        # a tool part named StructuredOutput. NEVER include retryCount:
+        # the upstream rejects it and permanently poisons the session
+        # (H-03). Callers own the format object; propagate verbatim.
+        if format_override is not None:
+            if not isinstance(format_override, Mapping):
+                raise ValueError("format_override must be a mapping")
+            fmt = dict(format_override)
+            fmt.pop("retryCount", None)
+            payload["format"] = fmt
 
         if self._log_payloads:
             logger.debug("OpenCode request payload=%s", payload)

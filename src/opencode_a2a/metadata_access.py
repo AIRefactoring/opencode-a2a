@@ -46,6 +46,28 @@ def extract_first_namespaced_string(
     return None
 
 
+def extract_first_namespaced_value(
+    sources: Iterable[Mapping[str, Any] | None],
+    *,
+    namespace: str,
+    path: tuple[str, ...],
+    expected_type: type | tuple[type, ...] = Mapping,
+) -> Any | None:
+    """First namespaced value whose type matches ``expected_type``.
+
+    Unlike the string variant this returns non-scalar values (mappings,
+    lists) — used by the structured-output contract to pass a JSON Schema
+    format object through to the upstream request payload.
+    """
+    for source in sources:
+        candidate = extract_namespaced_value(source, namespace=namespace, path=path)
+        if isinstance(candidate, expected_type):
+            if candidate is Mapping or isinstance(candidate, type):
+                continue
+            return candidate
+    return None
+
+
 def _normalize_mapping(value: Any) -> Mapping[str, Any] | None:
     if isinstance(value, ProtoMessage):
         normalized = MessageToDict(value)

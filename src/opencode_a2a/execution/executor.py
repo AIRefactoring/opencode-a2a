@@ -31,7 +31,10 @@ from ..contracts.extensions import (
     STREAMING_EXTENSION_URI,
 )
 from ..extension_negotiation import requested_extensions_from_call_context
-from ..metadata_access import extract_first_namespaced_string
+from ..metadata_access import (
+    extract_first_namespaced_string,
+    extract_first_namespaced_value,
+)
 from ..opencode_upstream_client import OpencodeUpstreamClient
 from ..output_modes import accepts_output_mode, normalize_accepted_output_modes
 from ..parts.mapping import (
@@ -181,6 +184,37 @@ class OpencodeAgentExecutor(AgentExecutor):
             if model_provider_id is not None and model_id is not None
             else None
         )
+        # Structured output contract (metadata.shared.format): a JSON
+        # Schema output format passed through to
+        # POST /session/{id}/message as format={type:json_schema,schema}.
+        # The upstream validates the model response server-side and the
+        # result lands in a tool part named StructuredOutput, which the
+        # coordinator surfaces as an artifact named "structured_output".
+        # retryCount is stripped client-side — the upstream rejects it
+        # and poisons the session permanently (hallazgo H-03).
+        format_override = extract_first_namespaced_value(
+            metadata_source_tuple,
+            namespace="shared",
+            path=("format",),
+            expected_type=Mapping,
+        )
+        if format_override is not None:
+            fmt_type = format_override.get("type")
+            if fmt_type != "json_schema" or not isinstance(
+                format_override.get("schema"), Mapping
+            ):
+                format_override = None
+                logger.warning(
+                    "metadata.shared.format rejected: only "
+                    "{type: json_schema, schema: object} is supported"
+                )
+        if format_override is not None:
+            # shallow-copy: strip retryCount client-side (the upstream
+            # rejects it and the session becomes permanently unreadable:
+            # H-03). The copy also decouples us from the caller's dict.
+            fmt = dict(format_override)
+            fmt.pop("retryCount", None)
+            format_override = fmt
         # Directory validation
         metadata = context.metadata
         if metadata is not None and not isinstance(metadata, Mapping):
@@ -293,6 +327,7 @@ class OpencodeAgentExecutor(AgentExecutor):
             emit_session_metadata=emit_session_metadata,
             emit_streaming_metadata=emit_streaming_metadata,
             emit_interrupt_metadata=emit_interrupt_metadata,
+            format_override=dict(format_override) if format_override else None,
         )
         coordinator = ExecutionCoordinator(
             self,

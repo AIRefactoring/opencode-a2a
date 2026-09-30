@@ -1405,3 +1405,88 @@ async def test_interrupt_request_helpers_list_pending_by_identity_and_type() -> 
     assert questions[0].details == {"questions": [{"question": "Proceed?"}]}
 
     await client.close()
+
+
+@pytest.mark.asyncio
+async def test_send_message_propagates_format_and_strips_retry_count(monkeypatch):
+    """Structured output contract (H-01/H-03): format is passed through to
+    the upstream /session/{id}/message payload; retryCount is stripped
+    client-side because the upstream rejects it and poisons the session."""
+
+    client = OpencodeUpstreamClient(
+        make_settings(
+            test_bearer_token="t-1",
+            opencode_timeout=1.0,
+            a2a_log_level="DEBUG",
+            a2a_log_payloads=False,
+        )
+    )
+
+    seen = {}
+
+    async def fake_post(path: str, *, params=None, json=None, **_kwargs):
+        seen["path"] = path
+        seen["json"] = json
+        return _DummyResponse({"info": {"id": "m-1"}, "parts": [{"type": "text", "text": "ok"}]})
+
+    monkeypatch.setattr(client._client, "post", fake_post)
+
+    schema = {"type": "object", "properties": {"fleet.summary": {"type": "string"}}}
+    await client.send_message(
+        "ses-1",
+        "do the thing",
+        format_override={
+            "type": "json_schema",
+            "schema": schema,
+            "retryCount": 2,
+        },
+    )
+
+    assert seen["path"] == "/session/ses-1/message"
+    payload_format = seen["json"]["format"]
+    assert payload_format["type"] == "json_schema"
+    assert payload_format["schema"] == schema
+    assert "retryCount" not in payload_format
+
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_send_message_without_format_keeps_payload_unchanged(monkeypatch):
+    client = OpencodeUpstreamClient(
+        make_settings(
+            test_bearer_token="t-1",
+            opencode_timeout=1.0,
+            a2a_log_level="DEBUG",
+            a2a_log_payloads=False,
+        )
+    )
+
+    seen = {}
+
+    async def fake_post(path: str, *, params=None, json=None, **_kwargs):
+        seen["json"] = json
+        return _DummyResponse({"info": {"id": "m-1"}, "parts": [{"type": "text", "text": "ok"}]})
+
+    monkeypatch.setattr(client._client, "post", fake_post)
+
+    await client.send_message("ses-1", "hello")
+
+    assert "format" not in seen["json"]
+
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_send_message_rejects_non_mapping_format(monkeypatch):
+    client = OpencodeUpstreamClient(
+        make_settings(
+            test_bearer_token="t-1",
+            opencode_timeout=1.0,
+            a2a_log_level="DEBUG",
+            a2a_log_payloads=False,
+        )
+    )
+    with pytest.raises(ValueError, match="format_override"):
+        await client.send_message("ses-1", "x", format_override=["bad"])
+    await client.close()

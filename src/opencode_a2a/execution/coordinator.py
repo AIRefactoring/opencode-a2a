@@ -22,6 +22,7 @@ from a2a.types import (
     TaskStatusUpdateEvent,
 )
 
+from ..a2a_utils import make_data_part as _make_data_part
 from ..opencode_upstream_client import UpstreamConcurrencyLimitError, UpstreamContractError
 from .event_helpers import _enqueue_artifact_update
 from .stream_events import _extract_token_usage, _extract_upstream_error_from_response
@@ -62,6 +63,9 @@ class PreparedExecution:
     emit_session_metadata: bool
     emit_streaming_metadata: bool
     emit_interrupt_metadata: bool
+    # structured-output contract: JSON Schema passed verbatim to the
+    # upstream send_message payload as format={type:json_schema,...}
+    format_override: dict[str, Any] | None = None
 
 
 def build_session_binding_context_id(
@@ -133,6 +137,8 @@ class ExecutionCoordinator:
                     send_kwargs["model_override"] = self._prepared.model_override
                 if self._prepared.streaming_request:
                     send_kwargs["timeout_override"] = self._executor._client.stream_timeout
+                if self._prepared.format_override is not None:
+                    send_kwargs["format_override"] = self._prepared.format_override
 
                 if not self._prepared.use_structured_parts and not turn_request_parts:
                     response = await self._executor._client.send_message(
@@ -457,6 +463,21 @@ class ExecutionCoordinator:
             name="response",
             parts=[Part(text=response_text)],
         )
+        artifacts = [artifact]
+        structured = _extract_structured_output(response.raw)
+        if structured is not None:
+            # structured-output contract: when the upstream request carried
+            # format={type:json_schema,...} the validated JSON lands in a
+            # tool part named StructuredOutput; expose it as its own
+            # artifact so clients don't have to parse free text.
+            structured_artifact = Artifact(
+                artifact_id=str(uuid.uuid4()),
+                name="structured_output",
+            )
+            structured_artifact.parts.extend(
+                [_make_data_part(structured)]
+            )
+            artifacts.append(structured_artifact)
         if self._context.current_task and self._context.current_task.history:
             history = list(self._context.current_task.history)
         else:
@@ -468,7 +489,7 @@ class ExecutionCoordinator:
             context_id=self._context_id,
             status=TaskStatus(state=TaskState.TASK_STATE_COMPLETED),
             history=history,
-            artifacts=[artifact],
+            artifacts=artifacts,
             metadata=_build_output_metadata(
                 session_id=response.session_id,
                 usage=resolved_token_usage,
@@ -517,3 +538,34 @@ class ExecutionCoordinator:
             self._executor._running_directories.pop(self._execution_key, None)
             self._executor._running_workspace_ids.pop(self._execution_key, None)
             self._executor._running_binding_context_ids.pop(self._execution_key, None)
+
+
+def _extract_structured_output(raw: Mapping[str, Any] | Any) -> dict[str, Any] | None:
+    """Extract the validated JSON from a StructuredOutput tool part.
+
+    When a request carries format={type:json_schema,...} the upstream
+    model response contains a tool part whose tool name is
+    ``StructuredOutput`` and whose state.input holds the schema-validated
+    JSON object. Returns None when absent or not an object.
+    """
+    if isinstance(raw, Mapping):
+        parts = raw.get("parts")
+    else:
+        try:
+            parts = raw.parts
+        except AttributeError:
+            return None
+    if not isinstance(parts, (list, tuple)):
+        return None
+    for part in parts:
+        if not isinstance(part, Mapping):
+            continue
+        if str(part.get("tool") or "").strip() != "StructuredOutput":
+            continue
+        state = part.get("state")
+        if not isinstance(state, Mapping):
+            continue
+        candidate = state.get("input")
+        if isinstance(candidate, Mapping):
+            return dict(candidate)
+    return None
