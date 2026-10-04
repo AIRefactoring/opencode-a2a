@@ -134,7 +134,9 @@ async def validate_agent_url(
         for item in allowed_hosts or ()
         if (item or "").strip()
     )
-    hostname_only = tuple(entry for entry in allowlist if ":" not in entry or entry.startswith("*."))
+    hostname_only = tuple(
+        entry for entry in allowlist if ":" not in entry or entry.startswith("*.")
+    )
     matched = matches_allowed_host(host, allowlist)
     if allowlist and not matched:
         raise A2ANetworkPolicyError(
@@ -144,8 +146,18 @@ async def validate_agent_url(
     # entries keep matching every port, so a URL whose host matches one of
     # them is not subject to the port pinning of the remaining entries.
     hostname_matched = matches_allowed_host(host, hostname_only)
-    pinned_ports = tuple(entry.rpartition(":")[2] for entry in allowlist if ":" in entry and not entry.startswith("*."))
-    if (allowlist and pinned_ports and url_port and not hostname_matched and url_port not in pinned_ports):
+    pinned_ports = tuple(
+        entry.rpartition(":")[2]
+        for entry in allowlist
+        if ":" in entry and not entry.startswith("*.")
+    )
+    if (
+        allowlist
+        and pinned_ports
+        and url_port
+        and not hostname_matched
+        and url_port not in pinned_ports
+    ):
         raise A2ANetworkPolicyError(
             f"Agent URL port {url_port!r} is not allowed by A2A_CLIENT_ALLOWED_HOSTS"
         )
