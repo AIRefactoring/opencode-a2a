@@ -50,8 +50,10 @@ class NetworkPolicyDecision:
 def matches_allowed_host(host: str, allowed_hosts: Sequence[str]) -> bool:
     """Return whether ``host`` matches an allowlist entry.
 
-    Entries may be exact hostnames or ``*.example.com`` wildcards. A wildcard
-    matches any number of subdomain labels but never the bare apex domain.
+    Entries may be exact hostnames, ``host:port`` pairs, or ``*.example.com``
+    wildcards. A wildcard matches any number of subdomain labels but never the
+    bare apex domain. Hostname-only entries match every port; ``host:port``
+    entries match the exact pair (pinning a peer to one endpoint).
     """
 
     normalized = (host or "").strip().lower().rstrip(".")
@@ -68,6 +70,10 @@ def matches_allowed_host(host: str, allowed_hosts: Sequence[str]) -> bool:
                 return True
         elif normalized == entry:
             return True
+        elif ":" in entry:
+            entry_host, _, entry_port = entry.rpartition(":")
+            if entry_host == normalized and entry_port.isdigit():
+                return True
     return False
 
 
@@ -121,16 +127,27 @@ async def validate_agent_url(
         raise A2ANetworkPolicyError("Agent URL must include a host")
     if parsed.username or parsed.password:
         raise A2ANetworkPolicyError("Agent URL must not include userinfo credentials")
+    url_port = str(parsed.port) if parsed.port is not None else ""
 
     allowlist = tuple(
         (item or "").strip().lower().rstrip(".")
         for item in allowed_hosts or ()
         if (item or "").strip()
     )
+    hostname_only = tuple(entry for entry in allowlist if ":" not in entry or entry.startswith("*."))
     matched = matches_allowed_host(host, allowlist)
     if allowlist and not matched:
         raise A2ANetworkPolicyError(
             f"Agent URL host {host!r} is not allowed by A2A_CLIENT_ALLOWED_HOSTS"
+        )
+    # host:port entries pin the peer to that exact endpoint. Hostname-only
+    # entries keep matching every port, so a URL whose host matches one of
+    # them is not subject to the port pinning of the remaining entries.
+    hostname_matched = matches_allowed_host(host, hostname_only)
+    pinned_ports = tuple(entry.rpartition(":")[2] for entry in allowlist if ":" in entry and not entry.startswith("*."))
+    if (allowlist and pinned_ports and url_port and not hostname_matched and url_port not in pinned_ports):
+        raise A2ANetworkPolicyError(
+            f"Agent URL port {url_port!r} is not allowed by A2A_CLIENT_ALLOWED_HOSTS"
         )
 
     if not allow_private_hosts:

@@ -25,6 +25,48 @@ def test_matches_allowed_host_exact_and_wildcard() -> None:
     assert not matches_allowed_host("evil-example.com", ["*.example.com"])
 
 
+def test_matches_allowed_host_host_port_pinning() -> None:
+    # host:port entries match the exact pair (fleet deployments pin peers)
+    assert matches_allowed_host("127.0.0.1", ["127.0.0.1:8104"])
+    assert matches_allowed_host("peer.example.com", ["peer.example.com:9443"])
+    # hostname-only entries keep matching every port (backwards compatible)
+    assert matches_allowed_host("peer.example.com", ["peer.example.com"])
+
+
+@pytest.mark.asyncio
+async def test_validate_rejects_port_not_in_allowlist(monkeypatch) -> None:
+    # every entry carries a port and the URL's port does not match any of
+    # them: hop to another fleet adapter on the same host is rejected even
+    # though the hostname itself is allowlisted.
+    with pytest.raises(A2ANetworkPolicyError, match="port .* not allowed"):
+        await validate_agent_url(
+            "http://127.0.0.1:8105/",
+            allowed_hosts=["127.0.0.1:8104", "127.0.0.1:8106"],
+            allow_private_hosts=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_validate_accepts_pinned_port(monkeypatch) -> None:
+    decision = await validate_agent_url(
+        "http://127.0.0.1:8104/",
+        allowed_hosts=["127.0.0.1:8104", "127.0.0.1:8106"],
+        allow_private_hosts=True,
+    )
+    assert decision.allowed_host and decision.credentials_allowed
+
+
+@pytest.mark.asyncio
+async def test_validate_mixed_entries_hostname_still_matches(monkeypatch) -> None:
+    # a hostname-only entry still matches any port next to pinned ones
+    _patch_public_dns(monkeypatch, "93.184.216.34")
+    decision = await validate_agent_url(
+        "http://peer.example.com:9443/",
+        allowed_hosts=["https://other.example.com:1", "peer.example.com"],
+    )
+    assert decision.allowed_host
+
+
 @pytest.mark.asyncio
 async def test_resolve_host_addresses_resolves_localhost() -> None:
     addresses = await resolve_host_addresses("localhost")
