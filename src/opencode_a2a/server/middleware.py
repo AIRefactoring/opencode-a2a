@@ -175,6 +175,7 @@ def add_auth_middleware(app: FastAPI, settings) -> None:  # noqa: ANN001
     async def bearer_auth(request: Request, call_next):
         if request.method == "OPTIONS" or request.url.path in {
             AGENT_CARD_WELL_KNOWN_PATH,
+            "/metrics",
         }:
             return await call_next(request)
 
